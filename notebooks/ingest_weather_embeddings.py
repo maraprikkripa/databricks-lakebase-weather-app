@@ -4,14 +4,16 @@
 # MAGIC
 # MAGIC This notebook:
 # MAGIC 1. Reads unembedded weather documents from the `weather_documents` table in Lakebase
-# MAGIC 2. Chunks long narrative text (sliding window: 800 chars, 100 overlap)
-# MAGIC 3. Computes embeddings using sentence-transformers/all-MiniLM-L6-v2 (384-dim)
-# MAGIC 4. Writes embeddings to `weather_embeddings` table using pg8000 (Serverless-compatible)
+# MAGIC 2. Computes **document-level embeddings** (entire document as one vector)
+# MAGIC 3. Chunks long narrative text (sliding window: 800 chars, 100 overlap)
+# MAGIC 4. Computes **chunk-level embeddings** using sentence-transformers/all-MiniLM-L6-v2 (384-dim)
+# MAGIC 5. Writes both to `weather_document_embeddings` and `weather_embeddings` tables
 # MAGIC
 # MAGIC **Key differences from news pipeline:**
 # MAGIC - Uses pg8000 instead of psycopg2 (pure Python, no C extensions)
 # MAGIC - Handles double base64-encoded secrets
 # MAGIC - Weather text is shorter than news articles (less chunking needed)
+# MAGIC - Generates BOTH document-level AND chunk-level embeddings (like news app)
 
 # COMMAND ----------
 
@@ -35,12 +37,14 @@ dbutils.library.restartPython()
 # COMMAND ----------
 
 dbutils.widgets.text("weather_documents_table", "weather_documents", "Source table (weather docs)")
-dbutils.widgets.text("weather_embeddings_table", "weather_embeddings", "Destination table (embeddings)")
+dbutils.widgets.text("weather_document_embeddings_table", "weather_document_embeddings", "Document-level embeddings")
+dbutils.widgets.text("weather_embeddings_table", "weather_embeddings", "Chunk-level embeddings")
 dbutils.widgets.text("embedding_model", "sentence-transformers/all-MiniLM-L6-v2", "Embedding model")
 dbutils.widgets.text("chunk_size", "800", "Chunk size (chars)")
 dbutils.widgets.text("chunk_overlap", "100", "Chunk overlap (chars)")
 
 WEATHER_DOCUMENTS_TABLE = dbutils.widgets.get("weather_documents_table")
+WEATHER_DOCUMENT_EMBEDDINGS_TABLE = dbutils.widgets.get("weather_document_embeddings_table")
 WEATHER_EMBEDDINGS_TABLE = dbutils.widgets.get("weather_embeddings_table")
 EMBEDDING_MODEL_NAME = dbutils.widgets.get("embedding_model")
 CHUNK_SIZE = int(dbutils.widgets.get("chunk_size"))
@@ -177,6 +181,50 @@ finally:
 # COMMAND ----------
 
 # MAGIC %md
+# MAGIC ## Compute Document-Level Embeddings (Entire Documents)
+
+# COMMAND ----------
+
+# DBTITLE 1,Load embedding model and compute document-level vectors
+import os
+from sentence_transformers import SentenceTransformer
+
+# Set up HuggingFace cache
+os.environ["HF_HOME"] = "/tmp/.cache/huggingface"
+os.environ["TRANSFORMERS_CACHE"] = "/tmp/.cache/huggingface"
+os.environ["HF_HUB_CACHE"] = "/tmp/.cache/huggingface"
+
+print(f"Loading embedding model {EMBEDDING_MODEL_NAME}...")
+model = SentenceTransformer(EMBEDDING_MODEL_NAME, cache_folder="/tmp/.cache/huggingface")
+
+# Compute document-level embeddings (entire narrative text as one vector)
+print(f"\nComputing document-level embeddings for {len(weather_df)} documents...")
+batch_size = 32
+doc_embeddings = []
+
+for i in range(0, len(weather_df), batch_size):
+    batch = weather_df.iloc[i:i+batch_size]
+    vectors = model.encode(batch["narrative_text"].tolist(), show_progress_bar=False)
+    doc_embeddings.extend(vectors.tolist())
+
+    if (i + batch_size) % 128 == 0:
+        print(f"  Processed {min(i + batch_size, len(weather_df))}/{len(weather_df)} documents")
+
+# Create document embeddings DataFrame
+document_embeddings_df = pd.DataFrame({
+    "id": weather_df["id"] + "_doc",
+    "document_id": weather_df["id"],
+    "embedding": doc_embeddings,
+    "model_name": EMBEDDING_MODEL_NAME
+})
+
+print(f"\n✅ Computed {len(document_embeddings_df)} document-level embeddings")
+print(f"   Vector dimensions: {len(doc_embeddings[0])}")
+display(document_embeddings_df.head(5))
+
+# COMMAND ----------
+
+# MAGIC %md
 # MAGIC ## Chunk Long Narrative Text
 
 # COMMAND ----------
@@ -225,24 +273,13 @@ display(chunks_df.head(10))
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Compute Embeddings
+# MAGIC ## Compute Chunk-Level Embeddings
 
 # COMMAND ----------
 
-# DBTITLE 1,Load embedding model and compute vectors
-import os
-from sentence_transformers import SentenceTransformer
-
-# Set up HuggingFace cache
-os.environ["HF_HOME"] = "/tmp/.cache/huggingface"
-os.environ["TRANSFORMERS_CACHE"] = "/tmp/.cache/huggingface"
-os.environ["HF_HUB_CACHE"] = "/tmp/.cache/huggingface"
-
-print(f"Loading embedding model {EMBEDDING_MODEL_NAME}...")
-model = SentenceTransformer(EMBEDDING_MODEL_NAME, cache_folder="/tmp/.cache/huggingface")
-
-# Compute embeddings in batches
-print("Computing embeddings...")
+# DBTITLE 1,Compute chunk-level embeddings (model already loaded)
+# Compute chunk embeddings in batches
+print(f"Computing chunk-level embeddings for {len(chunks_df)} chunks...")
 batch_size = 32
 all_embeddings = []
 
@@ -270,7 +307,71 @@ print(f"   Vector dimensions: {len(all_embeddings[0])}")
 # COMMAND ----------
 
 # MAGIC %md
-# MAGIC ## Write Embeddings to Lakebase
+# MAGIC ## Write Document-Level Embeddings to Lakebase
+
+# COMMAND ----------
+
+# DBTITLE 1,Insert document-level embeddings using pg8000
+import pg8000
+from datetime import datetime
+
+print(f"Inserting {len(document_embeddings_df)} document-level embeddings into {WEATHER_DOCUMENT_EMBEDDINGS_TABLE}...")
+
+conn = pg8000.connect(
+    host=db_host,
+    port=db_port,
+    database=db_name,
+    user=db_user,
+    password=db_password,
+    ssl_context=True
+)
+
+try:
+    cursor = conn.cursor()
+
+    # Prepare data for batch insert
+    embedded_at = datetime.now()
+    insert_count = 0
+
+    for idx, row in document_embeddings_df.iterrows():
+        # Format embedding as PostgreSQL array literal
+        embedding_str = '{' + ','.join(str(float(x)) for x in row['embedding']) + '}'
+
+        cursor.execute(
+            f"""
+            INSERT INTO {WEATHER_DOCUMENT_EMBEDDINGS_TABLE} (
+                id, document_id, embedding, model_name, embedded_at
+            )
+            VALUES (%s, %s, %s::double precision[], %s, %s)
+            ON CONFLICT (document_id) DO UPDATE
+                SET embedding = EXCLUDED.embedding,
+                    embedded_at = EXCLUDED.embedded_at
+            """,
+            [
+                row['id'],
+                row['document_id'],
+                embedding_str,
+                row['model_name'],
+                embedded_at
+            ]
+        )
+        insert_count += 1
+
+        if insert_count % 50 == 0:
+            print(f"  Inserted {insert_count}/{len(document_embeddings_df)} document embeddings...")
+
+    conn.commit()
+    print(f"\n✅ Successfully inserted {insert_count} document-level embeddings")
+    print(f"   (Duplicates were updated via ON CONFLICT)")
+
+finally:
+    cursor.close()
+    conn.close()
+
+# COMMAND ----------
+
+# MAGIC %md
+# MAGIC ## Write Chunk-Level Embeddings to Lakebase
 
 # COMMAND ----------
 
@@ -382,8 +483,52 @@ try:
 finally:
     conn.close()
 
+# COMMAND ----------
+
+# DBTITLE 1,Verify document-level embeddings
+conn = pg8000.connect(
+    host=db_host,
+    port=db_port,
+    database=db_name,
+    user=db_user,
+    password=db_password,
+    ssl_context=True
+)
+
+try:
+    cursor = conn.cursor()
+
+    # Check count
+    cursor.execute(f"SELECT COUNT(*) FROM {WEATHER_DOCUMENT_EMBEDDINGS_TABLE}")
+    doc_count = cursor.fetchone()[0]
+    print(f"✅ Total document-level embeddings in table: {doc_count}")
+
+    # Sample a few
+    cursor.execute(f"""
+        SELECT
+            document_id,
+            model_name
+        FROM {WEATHER_DOCUMENT_EMBEDDINGS_TABLE}
+        ORDER BY embedded_at DESC
+        LIMIT 5
+    """)
+
+    print(f"\nSample document embeddings:")
+    for row in cursor.fetchall():
+        print(f"  {row[0]} (model: {row[1]})")
+
+    cursor.close()
+
+finally:
+    conn.close()
+
+# COMMAND ----------
+
 print(f"\n🎉 Embedding pipeline complete!")
 print(f"   Documents processed: {len(weather_df)}")
+print(f"   Document-level embeddings stored: {len(document_embeddings_df)}")
 print(f"   Chunks created: {len(chunks_df)}")
-print(f"   Embeddings stored: {len(embeddings_df)}")
-print(f"\n✅ Ready for semantic search via POST /weather/search!")
+print(f"   Chunk-level embeddings stored: {len(embeddings_df)}")
+print(f"\n✅ Ready for semantic search!")
+print(f"   - Document-level: Search via {WEATHER_DOCUMENT_EMBEDDINGS_TABLE}")
+print(f"   - Chunk-level: Search via {WEATHER_EMBEDDINGS_TABLE}")

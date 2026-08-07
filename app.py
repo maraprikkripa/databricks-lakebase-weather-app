@@ -43,6 +43,7 @@ app = Flask(__name__)
 
 # Table names
 WEATHER_DOCUMENTS_TABLE = os.environ.get("WEATHER_DOCUMENTS_TABLE", "weather_documents")
+WEATHER_DOCUMENT_EMBEDDINGS_TABLE = os.environ.get("WEATHER_DOCUMENT_EMBEDDINGS_TABLE", "weather_document_embeddings")
 WEATHER_EMBEDDINGS_TABLE = os.environ.get("WEATHER_EMBEDDINGS_TABLE", "weather_embeddings")
 
 # Load embedding model once at startup (not per-request)
@@ -346,18 +347,20 @@ def search_weather():
     {
         "query": "risk of flooding near rivers",
         "top_k": 5,
-        "source_type": "alert"  // optional filter: "alert" or "forecast"
+        "source_type": "alert",  // optional filter: "alert" or "forecast"
+        "search_level": "chunk"   // optional: "document" or "chunk" (default: "chunk")
     }
 
     Returns:
     {
         "query": "risk of flooding near rivers",
+        "search_level": "chunk",
         "results": [
             {
                 "document_id": "abc123",
                 "location": "Chicago, IL",
                 "headline": "Flash Flood Warning",
-                "chunk_text": "...",
+                "chunk_text": "...",  // only for chunk-level search
                 "similarity": 0.87
             },
             ...
@@ -376,41 +379,64 @@ def search_weather():
     top_k = max(1, min(top_k, 20))  # Clamp to [1, 20]
 
     source_type_filter = request.json.get("source_type")  # optional: "alert" or "forecast"
+    search_level = request.json.get("search_level", "chunk")  # "document" or "chunk"
+
+    if search_level not in ("document", "chunk"):
+        return jsonify({"error": "search_level must be 'document' or 'chunk'"}), 400
+
+    # Determine which embeddings table to use
+    embeddings_table = WEATHER_DOCUMENT_EMBEDDINGS_TABLE if search_level == "document" else WEATHER_EMBEDDINGS_TABLE
 
     # Check if embeddings table exists and has data
     try:
         count_result = lakebase.run_query(
-            f"SELECT COUNT(*) as count FROM {WEATHER_EMBEDDINGS_TABLE}"
+            f"SELECT COUNT(*) as count FROM {embeddings_table}"
         )
         if count_result[0]["count"] == 0:
             return jsonify({
                 "query": query_text,
                 "results": [],
-                "message": "No embeddings found. Run /weather/sync first, then run the embedding notebook."
+                "message": f"No {search_level}-level embeddings found. Run /weather/sync first, then run the embedding notebook."
             })
     except Exception as e:
         return jsonify({
-            "error": f"Embeddings table not found or not accessible: {str(e)}",
-            "message": "Run the SQL DDL scripts to create weather_embeddings table"
+            "error": f"Embeddings table '{embeddings_table}' not found or not accessible: {str(e)}",
+            "message": f"Run the SQL DDL script to create {embeddings_table} table"
         }), 500
 
     # Embed the query
     query_embedding = embedding_model.encode(query_text).tolist()
 
-    # Build the search query
-    search_sql = f"""
-        SELECT
-            d.id as document_id,
-            d.location,
-            d.source_type,
-            d.headline,
-            d.event,
-            e.chunk_text,
-            e.chunk_index,
-            1 - (e.embedding <=> %s::vector) as similarity
-        FROM {WEATHER_EMBEDDINGS_TABLE} e
-        JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
-    """
+    # Build the search query based on search_level
+    if search_level == "document":
+        # Document-level search (entire documents)
+        search_sql = f"""
+            SELECT
+                d.id as document_id,
+                d.location,
+                d.source_type,
+                d.headline,
+                d.event,
+                d.narrative_text,
+                1 - (e.embedding <=> %s::vector) as similarity
+            FROM {WEATHER_DOCUMENT_EMBEDDINGS_TABLE} e
+            JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
+        """
+    else:
+        # Chunk-level search (text chunks)
+        search_sql = f"""
+            SELECT
+                d.id as document_id,
+                d.location,
+                d.source_type,
+                d.headline,
+                d.event,
+                e.chunk_text,
+                e.chunk_index,
+                1 - (e.embedding <=> %s::vector) as similarity
+            FROM {WEATHER_EMBEDDINGS_TABLE} e
+            JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
+        """
 
     params = [json.dumps(query_embedding)]
 
@@ -436,20 +462,28 @@ def search_weather():
     # Format results
     formatted_results = []
     for row in results:
-        formatted_results.append({
+        result = {
             "document_id": row["document_id"],
             "location": row["location"],
             "source_type": row["source_type"],
             "headline": row["headline"],
             "event": row.get("event"),
-            "chunk_text": row["chunk_text"],
-            "chunk_index": row.get("chunk_index", 0),
             "similarity": float(row["similarity"])
-        })
+        }
+
+        # Add chunk-specific or document-specific fields
+        if search_level == "chunk":
+            result["chunk_text"] = row["chunk_text"]
+            result["chunk_index"] = row.get("chunk_index", 0)
+        else:
+            result["narrative_text"] = row["narrative_text"]
+
+        formatted_results.append(result)
 
     return jsonify({
         "query": query_text,
         "top_k": top_k,
+        "search_level": search_level,
         "source_type_filter": source_type_filter,
         "results": formatted_results
     })
@@ -467,9 +501,10 @@ def search_weather_rag():
         query (required): Natural language question (e.g., "Is there flooding in Illinois?")
         top_k (optional): Number of documents to retrieve (default: 5, max: 10)
         source_type (optional): Filter by "alert" or "forecast"
+        search_level (optional): "document" or "chunk" (default: "document" for RAG)
 
     Example:
-        GET /weather/search?query=Is%20there%20flooding%20in%20Illinois?&top_k=5
+        GET /weather/search?query=Is%20there%20flooding%20in%20Illinois?&top_k=5&search_level=document
 
     Returns:
         {
@@ -499,43 +534,66 @@ def search_weather_rag():
     top_k = max(1, min(top_k, 10))  # Clamp to [1, 10] for RAG
 
     source_type_filter = request.args.get("source_type")
+    search_level = request.args.get("search_level", "document")  # Default to document-level for RAG
+
+    if search_level not in ("document", "chunk"):
+        return jsonify({"error": "search_level must be 'document' or 'chunk'"}), 400
 
     # STEP 1: RETRIEVE - Use vector search to find relevant documents
-    logger.info(f"RAG Step 1: Retrieving documents for query: {query_text}")
+    logger.info(f"RAG Step 1: Retrieving {search_level}-level documents for query: {query_text}")
+
+    # Determine which embeddings table to use
+    embeddings_table = WEATHER_DOCUMENT_EMBEDDINGS_TABLE if search_level == "document" else WEATHER_EMBEDDINGS_TABLE
 
     # Check if embeddings exist
     try:
         count_result = lakebase.run_query(
-            f"SELECT COUNT(*) as count FROM {WEATHER_EMBEDDINGS_TABLE}"
+            f"SELECT COUNT(*) as count FROM {embeddings_table}"
         )
         if count_result[0]["count"] == 0:
             return jsonify({
                 "error": "No embeddings found",
-                "message": "Run /weather/sync first, then run the embedding notebook."
+                "message": f"Run /weather/sync first, then run the embedding notebook to generate {search_level}-level embeddings."
             }), 404
     except Exception as e:
         return jsonify({
-            "error": f"Embeddings table not accessible: {str(e)}"
+            "error": f"Embeddings table '{embeddings_table}' not accessible: {str(e)}"
         }), 500
 
     # Embed the query
     query_embedding = embedding_model.encode(query_text).tolist()
 
-    # Build search query
-    search_sql = f"""
-        SELECT
-            d.id as document_id,
-            d.location,
-            d.source_type,
-            d.headline,
-            d.event,
-            d.narrative_text,
-            e.chunk_text,
-            e.chunk_index,
-            1 - (e.embedding <=> %s::vector) as similarity
-        FROM {WEATHER_EMBEDDINGS_TABLE} e
-        JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
-    """
+    # Build search query based on search_level
+    if search_level == "document":
+        # Document-level search
+        search_sql = f"""
+            SELECT
+                d.id as document_id,
+                d.location,
+                d.source_type,
+                d.headline,
+                d.event,
+                d.narrative_text,
+                1 - (e.embedding <=> %s::vector) as similarity
+            FROM {WEATHER_DOCUMENT_EMBEDDINGS_TABLE} e
+            JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
+        """
+    else:
+        # Chunk-level search
+        search_sql = f"""
+            SELECT
+                d.id as document_id,
+                d.location,
+                d.source_type,
+                d.headline,
+                d.event,
+                d.narrative_text,
+                e.chunk_text,
+                e.chunk_index,
+                1 - (e.embedding <=> %s::vector) as similarity
+            FROM {WEATHER_EMBEDDINGS_TABLE} e
+            JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
+        """
 
     params = [json.dumps(query_embedding)]
 
@@ -564,16 +622,19 @@ def search_weather_rag():
         })
 
     # STEP 2: AUGMENT - Build context from retrieved documents
-    logger.info(f"RAG Step 2: Augmenting prompt with {len(results)} retrieved documents")
+    logger.info(f"RAG Step 2: Augmenting prompt with {len(results)} retrieved {search_level}-level documents")
 
     context_parts = []
     for i, doc in enumerate(results, 1):
+        # Use chunk_text for chunk-level, narrative_text for document-level
+        content = doc.get('chunk_text') if search_level == "chunk" else doc['narrative_text']
+
         context_parts.append(
             f"[Document {i}]\n"
             f"Location: {doc['location']}\n"
             f"Type: {doc['source_type']}\n"
             f"Headline: {doc['headline']}\n"
-            f"Content: {doc['chunk_text']}\n"
+            f"Content: {content}\n"
         )
 
     context = "\n".join(context_parts)
@@ -628,6 +689,7 @@ Please provide a helpful answer based on the context above."""
         "query": query_text,
         "summary": summary,
         "sources": sources,
+        "search_level": search_level,
         "retrieval_count": len(results),
         "llm_type": llm_type  # Show which LLM was used
     })
