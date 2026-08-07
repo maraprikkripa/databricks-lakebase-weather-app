@@ -377,6 +377,7 @@ This project incorporates lessons learned from the news app:
 4. **✅ HNSW Index** - Fast vector search
 5. **✅ Rate Limiting** - Respects NWS API throttling
 6. **✅ Error Handling** - Graceful API failures
+7. **✅ RAG with Databricks Foundation Models** - Uses Llama 3.1 70B (free in Databricks!)
 
 ---
 
@@ -412,6 +413,7 @@ databricks-lakebase-weather-app/
 2. Run the embedding notebook and see vectors in weather_embeddings
 3. POST to /weather/search with "flood risk" and get relevant alerts ranked by similarity
 4. Query embeddings directly in SQL using <=> operator
+5. **GET /weather/search?query=...** with RAG to get natural language summaries (Extra Credit!)
 
 ---
 
@@ -421,6 +423,8 @@ databricks-lakebase-weather-app/
 - **pgvector**: https://github.com/pgvector/pgvector
 - **sentence-transformers**: https://www.sbert.net/
 - **Databricks Lakebase**: https://docs.databricks.com/lakebase/
+- **Databricks Foundation Models**: https://docs.databricks.com/en/machine-learning/foundation-models/
+- **RAG Guide**: See DATABRICKS_RAG_GUIDE.md for using Databricks LLMs
 
 ---
 

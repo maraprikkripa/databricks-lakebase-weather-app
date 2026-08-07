@@ -14,12 +14,27 @@ import json
 import logging
 import os
 
-from anthropic import Anthropic
 from flask import Flask, jsonify, request
 from sentence_transformers import SentenceTransformer
 
 import lakebase
 from weather_client import WeatherClient
+
+# Try to import Databricks SDK for Foundation Models
+try:
+    from databricks.sdk import WorkspaceClient
+    from databricks.sdk.service.serving import ChatMessage, ChatMessageRole
+    DATABRICKS_AVAILABLE = True
+except ImportError:
+    DATABRICKS_AVAILABLE = False
+    logger.warning("databricks-sdk not available - Databricks Foundation Models disabled")
+
+# Try to import Anthropic as fallback
+try:
+    from anthropic import Anthropic
+    ANTHROPIC_AVAILABLE = True
+except ImportError:
+    ANTHROPIC_AVAILABLE = False
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("weather-app")
@@ -36,14 +51,32 @@ logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 logger.info("Embedding model loaded successfully")
 
-# Initialize Anthropic client for RAG (optional, only if ANTHROPIC_API_KEY is set)
-anthropic_client = None
-anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
-if anthropic_api_key:
-    anthropic_client = Anthropic(api_key=anthropic_api_key)
-    logger.info("Anthropic client initialized for RAG")
-else:
-    logger.warning("ANTHROPIC_API_KEY not set - RAG endpoint will not be available")
+# Initialize LLM clients for RAG (priority: Databricks > Anthropic)
+llm_client = None
+llm_type = None
+
+# Try Databricks Foundation Models first (recommended for Databricks deployments)
+if DATABRICKS_AVAILABLE:
+    try:
+        workspace_client = WorkspaceClient()
+        # Test if we can access the workspace
+        workspace_client.current_user.me()
+        llm_client = workspace_client
+        llm_type = "databricks"
+        logger.info("Databricks Foundation Models initialized for RAG (using meta-llama-3.1-70b-instruct)")
+    except Exception as e:
+        logger.warning(f"Databricks Foundation Models not available: {e}")
+
+# Fall back to Anthropic if Databricks not available
+if not llm_client and ANTHROPIC_AVAILABLE:
+    anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+    if anthropic_api_key:
+        llm_client = Anthropic(api_key=anthropic_api_key)
+        llm_type = "anthropic"
+        logger.info("Anthropic client initialized for RAG (fallback)")
+
+if not llm_client:
+    logger.warning("No LLM client available - RAG endpoint will not be available")
 
 # Pre-defined locations (lat, lon) - can be expanded
 DEFAULT_LOCATIONS = {
@@ -53,6 +86,68 @@ DEFAULT_LOCATIONS = {
     "miami": (25.7617, -80.1918),
     "denver": (39.7392, -104.9903)
 }
+
+
+def call_llm(system_prompt: str, user_prompt: str) -> str:
+    """
+    Call the LLM (Databricks or Anthropic) with the given prompts.
+
+    Args:
+        system_prompt: System instructions
+        user_prompt: User query with context
+
+    Returns:
+        str: Generated response text
+
+    Raises:
+        Exception: If LLM call fails
+    """
+    if not llm_client:
+        raise Exception("No LLM client available")
+
+    if llm_type == "databricks":
+        # Databricks Foundation Models API
+        # Available models: meta-llama-3.1-70b-instruct, databricks-meta-llama-3.1-70b-instruct
+        try:
+            response = llm_client.serving_endpoints.query(
+                name="databricks-meta-llama-3-1-70b-instruct",  # Foundation Model endpoint
+                messages=[
+                    ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt),
+                    ChatMessage(role=ChatMessageRole.USER, content=user_prompt)
+                ],
+                max_tokens=500,
+                temperature=0.3  # Lower temp for factual weather responses
+            )
+
+            # Extract text from response
+            if response.choices and len(response.choices) > 0:
+                return response.choices[0].message.content
+            else:
+                raise Exception("Empty response from Databricks Foundation Model")
+
+        except Exception as e:
+            logger.exception("Databricks Foundation Model call failed")
+            raise Exception(f"Databricks LLM error: {str(e)}")
+
+    elif llm_type == "anthropic":
+        # Anthropic Claude API
+        try:
+            message = llm_client.messages.create(
+                model="claude-3-5-sonnet-20241022",
+                max_tokens=500,
+                system=system_prompt,
+                messages=[
+                    {"role": "user", "content": user_prompt}
+                ]
+            )
+            return message.content[0].text
+
+        except Exception as e:
+            logger.exception("Anthropic API call failed")
+            raise Exception(f"Anthropic LLM error: {str(e)}")
+
+    else:
+        raise Exception(f"Unknown LLM type: {llm_type}")
 
 
 def ensure_weather_documents_table():
@@ -386,12 +481,14 @@ def search_weather_rag():
             ]
         }
     """
-    # Check if Anthropic client is available
-    if not anthropic_client:
+    # Check if any LLM client is available
+    if not llm_client:
         return jsonify({
             "error": "RAG endpoint not available",
-            "message": "ANTHROPIC_API_KEY environment variable not set"
+            "message": "No LLM available (tried Databricks Foundation Models, then Anthropic)"
         }), 503
+
+    logger.info(f"Using LLM type: {llm_type}")
 
     # Parse query parameters
     query_text = request.args.get("query")
@@ -501,26 +598,18 @@ User Question: {query_text}
 Please provide a helpful answer based on the context above."""
 
     # STEP 3: GENERATE - Call LLM to generate summary
-    logger.info("RAG Step 3: Generating LLM summary")
+    logger.info(f"RAG Step 3: Generating LLM summary using {llm_type}")
 
     try:
-        message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20241022",
-            max_tokens=500,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": user_prompt}
-            ]
-        )
-
-        summary = message.content[0].text
-        logger.info("RAG summary generated successfully")
+        summary = call_llm(system_prompt, user_prompt)
+        logger.info(f"RAG summary generated successfully via {llm_type}")
 
     except Exception as e:
         logger.exception("LLM generation failed")
         return jsonify({
             "error": f"Failed to generate summary: {str(e)}",
-            "message": "Retrieved documents successfully but LLM call failed"
+            "message": f"Retrieved documents successfully but {llm_type} LLM call failed",
+            "llm_type": llm_type
         }), 500
 
     # Format sources for response
@@ -539,7 +628,8 @@ Please provide a helpful answer based on the context above."""
         "query": query_text,
         "summary": summary,
         "sources": sources,
-        "retrieval_count": len(results)
+        "retrieval_count": len(results),
+        "llm_type": llm_type  # Show which LLM was used
     })
 
 
