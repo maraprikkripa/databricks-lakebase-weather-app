@@ -19,6 +19,20 @@ class WeatherClient:
     BASE_URL = "https://api.weather.gov"
     DEFAULT_TIMEOUT = 30
 
+    # City name mappings for common locations (fallback if NWS doesn't provide)
+    CITY_NAMES = {
+        (41.8781, -87.6298): "Chicago, IL",
+        (30.2672, -97.7431): "Austin, TX",
+        (47.6062, -122.3321): "Seattle, WA",
+        (25.7617, -80.1918): "Miami, FL",
+        (39.7392, -104.9903): "Denver, CO",
+        (27.9506, -82.4572): "Tampa, FL",
+        (28.5383, -81.3792): "Orlando, FL",
+        (33.4484, -112.0740): "Phoenix, AZ",
+        (32.7767, -96.7970): "Dallas, TX",
+        (29.7604, -95.3698): "Houston, TX"
+    }
+
     def __init__(self, rate_limit_delay: float = 0.5):
         """
         Initialize weather client.
@@ -214,10 +228,14 @@ class WeatherClient:
                         grid_info["gridX"],
                         grid_info["gridY"]
                     )
-                    # Add city/state to location
+                    # Add city/state to location (from NWS or fallback to our mapping)
                     for f in forecasts:
                         if grid_info.get("city") and grid_info.get("state"):
                             f["location"] = f"{grid_info['city']}, {grid_info['state']}"
+                        elif (lat, lon) in self.CITY_NAMES:
+                            f["location"] = self.CITY_NAMES[(lat, lon)]
+                        else:
+                            f["location"] = f"{lat:.4f}, {lon:.4f}"  # Fallback to coordinates
                     documents.extend(forecasts)
                 except Exception as e:
                     print(f"Warning: Failed to fetch forecast for {lat},{lon}: {e}")
