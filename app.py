@@ -14,7 +14,7 @@ import json
 import logging
 import os
 
-from flask import Flask, jsonify, request
+from flask import Flask, jsonify, request, render_template
 from sentence_transformers import SentenceTransformer
 
 import lakebase
@@ -205,7 +205,13 @@ def handle_exception(err):
 
 @app.route("/")
 def index():
-    """Simple info page."""
+    """Serve the beautiful dark-themed UI."""
+    return render_template("index.html")
+
+
+@app.route("/api")
+def api_info():
+    """API info page."""
     return jsonify({
         "name": "Databricks Weather App",
         "version": "1.0",
