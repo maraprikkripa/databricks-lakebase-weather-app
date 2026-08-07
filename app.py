@@ -14,6 +14,7 @@ import json
 import logging
 import os
 
+from anthropic import Anthropic
 from flask import Flask, jsonify, request
 from sentence_transformers import SentenceTransformer
 
@@ -34,6 +35,15 @@ EMBEDDING_MODEL_NAME = "sentence-transformers/all-MiniLM-L6-v2"
 logger.info(f"Loading embedding model: {EMBEDDING_MODEL_NAME}")
 embedding_model = SentenceTransformer(EMBEDDING_MODEL_NAME)
 logger.info("Embedding model loaded successfully")
+
+# Initialize Anthropic client for RAG (optional, only if ANTHROPIC_API_KEY is set)
+anthropic_client = None
+anthropic_api_key = os.environ.get("ANTHROPIC_API_KEY")
+if anthropic_api_key:
+    anthropic_client = Anthropic(api_key=anthropic_api_key)
+    logger.info("Anthropic client initialized for RAG")
+else:
+    logger.warning("ANTHROPIC_API_KEY not set - RAG endpoint will not be available")
 
 # Pre-defined locations (lat, lon) - can be expanded
 DEFAULT_LOCATIONS = {
@@ -106,7 +116,8 @@ def index():
         "endpoints": {
             "health": "GET /healthz",
             "sync": "POST /weather/sync",
-            "search": "POST /weather/search"
+            "search": "POST /weather/search (vector search only)",
+            "search_rag": "GET /weather/search?query=... (RAG with LLM summary)"
         }
     })
 
@@ -346,6 +357,189 @@ def search_weather():
         "top_k": top_k,
         "source_type_filter": source_type_filter,
         "results": formatted_results
+    })
+
+
+@app.route("/weather/search", methods=["GET"])
+def search_weather_rag():
+    """
+    RAG (Retrieval Augmented Generation) endpoint:
+    - Retrieves relevant weather documents via vector search
+    - Augments an LLM prompt with the retrieved context
+    - Generates a natural language summary
+
+    Query Parameters:
+        query (required): Natural language question (e.g., "Is there flooding in Illinois?")
+        top_k (optional): Number of documents to retrieve (default: 5, max: 10)
+        source_type (optional): Filter by "alert" or "forecast"
+
+    Example:
+        GET /weather/search?query=Is%20there%20flooding%20in%20Illinois?&top_k=5
+
+    Returns:
+        {
+            "query": "Is there flooding in Illinois?",
+            "summary": "Yes, there are active flood warnings in Chicago...",
+            "sources": [
+                {"location": "Chicago", "headline": "Flash Flood Warning", "similarity": 0.89},
+                ...
+            ]
+        }
+    """
+    # Check if Anthropic client is available
+    if not anthropic_client:
+        return jsonify({
+            "error": "RAG endpoint not available",
+            "message": "ANTHROPIC_API_KEY environment variable not set"
+        }), 503
+
+    # Parse query parameters
+    query_text = request.args.get("query")
+    if not query_text:
+        return jsonify({"error": "Missing 'query' parameter"}), 400
+
+    top_k = request.args.get("top_k", 5, type=int)
+    top_k = max(1, min(top_k, 10))  # Clamp to [1, 10] for RAG
+
+    source_type_filter = request.args.get("source_type")
+
+    # STEP 1: RETRIEVE - Use vector search to find relevant documents
+    logger.info(f"RAG Step 1: Retrieving documents for query: {query_text}")
+
+    # Check if embeddings exist
+    try:
+        count_result = lakebase.run_query(
+            f"SELECT COUNT(*) as count FROM {WEATHER_EMBEDDINGS_TABLE}"
+        )
+        if count_result[0]["count"] == 0:
+            return jsonify({
+                "error": "No embeddings found",
+                "message": "Run /weather/sync first, then run the embedding notebook."
+            }), 404
+    except Exception as e:
+        return jsonify({
+            "error": f"Embeddings table not accessible: {str(e)}"
+        }), 500
+
+    # Embed the query
+    query_embedding = embedding_model.encode(query_text).tolist()
+
+    # Build search query
+    search_sql = f"""
+        SELECT
+            d.id as document_id,
+            d.location,
+            d.source_type,
+            d.headline,
+            d.event,
+            d.narrative_text,
+            e.chunk_text,
+            e.chunk_index,
+            1 - (e.embedding <=> %s::vector) as similarity
+        FROM {WEATHER_EMBEDDINGS_TABLE} e
+        JOIN {WEATHER_DOCUMENTS_TABLE} d ON d.id = e.document_id
+    """
+
+    params = [json.dumps(query_embedding)]
+
+    if source_type_filter in ("alert", "forecast"):
+        search_sql += " WHERE d.source_type = %s"
+        params.append(source_type_filter)
+
+    search_sql += f"""
+        ORDER BY e.embedding <=> %s::vector
+        LIMIT %s
+    """
+    params.append(json.dumps(query_embedding))
+    params.append(top_k)
+
+    try:
+        results = lakebase.run_query(search_sql, params)
+    except Exception as e:
+        logger.exception("Vector search failed")
+        return jsonify({"error": f"Search failed: {str(e)}"}), 500
+
+    if not results:
+        return jsonify({
+            "query": query_text,
+            "summary": "No relevant weather information found for your query.",
+            "sources": []
+        })
+
+    # STEP 2: AUGMENT - Build context from retrieved documents
+    logger.info(f"RAG Step 2: Augmenting prompt with {len(results)} retrieved documents")
+
+    context_parts = []
+    for i, doc in enumerate(results, 1):
+        context_parts.append(
+            f"[Document {i}]\n"
+            f"Location: {doc['location']}\n"
+            f"Type: {doc['source_type']}\n"
+            f"Headline: {doc['headline']}\n"
+            f"Content: {doc['chunk_text']}\n"
+        )
+
+    context = "\n".join(context_parts)
+
+    # Build the augmented prompt
+    system_prompt = """You are a helpful weather assistant. Your job is to answer questions about weather conditions based ONLY on the provided context.
+
+Rules:
+1. Answer based ONLY on the context provided - do not use outside knowledge
+2. If the context doesn't contain enough information, say so
+3. Be concise but informative
+4. Cite specific locations and details from the context
+5. If there are severe weather alerts, emphasize safety
+6. Do not make up information or speculate"""
+
+    user_prompt = f"""Context (retrieved weather documents):
+
+{context}
+
+User Question: {query_text}
+
+Please provide a helpful answer based on the context above."""
+
+    # STEP 3: GENERATE - Call LLM to generate summary
+    logger.info("RAG Step 3: Generating LLM summary")
+
+    try:
+        message = anthropic_client.messages.create(
+            model="claude-3-5-sonnet-20241022",
+            max_tokens=500,
+            system=system_prompt,
+            messages=[
+                {"role": "user", "content": user_prompt}
+            ]
+        )
+
+        summary = message.content[0].text
+        logger.info("RAG summary generated successfully")
+
+    except Exception as e:
+        logger.exception("LLM generation failed")
+        return jsonify({
+            "error": f"Failed to generate summary: {str(e)}",
+            "message": "Retrieved documents successfully but LLM call failed"
+        }), 500
+
+    # Format sources for response
+    sources = []
+    for doc in results:
+        sources.append({
+            "document_id": doc["document_id"],
+            "location": doc["location"],
+            "source_type": doc["source_type"],
+            "headline": doc["headline"],
+            "event": doc.get("event"),
+            "similarity": float(doc["similarity"])
+        })
+
+    return jsonify({
+        "query": query_text,
+        "summary": summary,
+        "sources": sources,
+        "retrieval_count": len(results)
     })
 
 
