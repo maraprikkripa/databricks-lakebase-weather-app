@@ -1,0 +1,21 @@
+# Databricks Asset Bundle config for Weather App
+# Deploy with: databricks bundle deploy -t dev
+
+bundle:
+  name: databricks-lakebase-weather-app
+
+include:
+  - resources/*.yml
+
+targets:
+  dev:
+    mode: development
+    default: true
+    workspace:
+      host: https://dbc-401e4b5b-2949.cloud.databricks.com  # Replace with your workspace URL
+
+  prod:
+    mode: production
+    workspace:
+      host: https://dbc-401e4b5b-2949.cloud.databricks.com  # Replace with your workspace URL
+      root_path: /Shared/.bundle/${bundle.name}/${bundle.target}

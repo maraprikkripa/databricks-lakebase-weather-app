@@ -1,0 +1,31 @@
+# Databricks Workflow for weather embedding ingestion
+# Runs the notebook that reads weather_documents and creates embeddings
+
+resources:
+  jobs:
+    ingest_weather_embeddings_job:
+      name: "[${bundle.target}] Ingest Weather Embeddings"
+
+      # Run daily at 7:00 AM UTC (after weather data typically updates)
+      schedule:
+        quartz_cron_expression: "0 0 7 * * ?"
+        timezone_id: "UTC"
+        pause_status: PAUSED  # Set to UNPAUSED once you've validated a manual run
+
+      email_notifications:
+        on_failure:
+          - ${workspace.current_user.userName}
+
+      max_concurrent_runs: 1
+
+      tasks:
+        - task_key: ingest_weather_embeddings
+          serverless_compute: true
+          notebook_task:
+            notebook_path: ../notebooks/ingest_weather_embeddings.py
+            base_parameters:
+              weather_documents_table: "weather_documents"
+              weather_embeddings_table: "weather_embeddings"
+              embedding_model: "sentence-transformers/all-MiniLM-L6-v2"
+              chunk_size: "800"
+              chunk_overlap: "100"

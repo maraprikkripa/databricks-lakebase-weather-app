@@ -1,0 +1,5 @@
+flask>=2.3.0
+databricks-sdk>=0.118.0
+pg8000>=1.30.0
+sentence-transformers>=2.2.0
+requests>=2.31.0
