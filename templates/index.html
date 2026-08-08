@@ -817,7 +817,7 @@
 
                     const similarity = (result.similarity * 100).toFixed(0);
 
-                    const text = result.chunk_text || result.narrative_text || '';
+                    const displayText = result.chunk_text || result.narrative_text || '';
 
                     html += `
                         <div class="result-item">
@@ -831,7 +831,7 @@
                             </div>
                             <div class="result-headline">${result.headline}</div>
                             <div class="result-location">📍 ${result.location}</div>
-                            <div class="result-text">${text.substring(0, 300)}${text.length > 300 ? '...' : ''}</div>
+                            <div class="result-text">${displayText.substring(0, 300)}${displayText.length > 300 ? '...' : ''}</div>
                         </div>
                     `;
                 });
