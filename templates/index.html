@@ -43,10 +43,21 @@
             width: 120px;
             height: 120px;
             background: radial-gradient(circle, #ffd700 0%, #ff8c00 100%);
-            box-shadow: 0 0 60px #ffd700;
+            box-shadow: 0 0 60px #ffd700, 0 0 100px #ff8c00;
             top: 10%;
             right: 15%;
-            animation-delay: 0s;
+            animation: float 6s ease-in-out infinite, sunGlow 3s ease-in-out infinite;
+        }
+
+        @keyframes sunGlow {
+            0%, 100% {
+                box-shadow: 0 0 60px #ffd700, 0 0 100px #ff8c00;
+                transform: scale(1);
+            }
+            50% {
+                box-shadow: 0 0 120px #ffd700, 0 0 180px #ff8c00, 0 0 220px rgba(255, 215, 0, 0.4);
+                transform: scale(1.05);
+            }
         }
 
         .moon {
@@ -77,6 +88,57 @@
         @keyframes twinkle {
             0%, 100% { opacity: 0.3; }
             50% { opacity: 1; }
+        }
+
+        /* Rain effect */
+        .rain {
+            position: absolute;
+            width: 2px;
+            height: 40px;
+            background: linear-gradient(to bottom, transparent, rgba(173, 216, 230, 0.6));
+            animation: rainfall 1s linear infinite;
+        }
+
+        @keyframes rainfall {
+            0% {
+                transform: translateY(-100px);
+                opacity: 0;
+            }
+            10% {
+                opacity: 1;
+            }
+            90% {
+                opacity: 1;
+            }
+            100% {
+                transform: translateY(100vh);
+                opacity: 0;
+            }
+        }
+
+        /* Storm cloud */
+        .cloud {
+            position: absolute;
+            background: rgba(100, 100, 120, 0.7);
+            border-radius: 100px;
+            animation: cloudFloat 20s linear infinite;
+        }
+
+        .cloud::before,
+        .cloud::after {
+            content: '';
+            position: absolute;
+            background: rgba(100, 100, 120, 0.7);
+            border-radius: 100px;
+        }
+
+        @keyframes cloudFloat {
+            0% {
+                transform: translateX(-200px);
+            }
+            100% {
+                transform: translateX(calc(100vw + 200px));
+            }
         }
 
         .container {
@@ -281,12 +343,102 @@
             background: rgba(255, 69, 0, 0.2);
             color: #ff6347;
             border: 1px solid rgba(255, 69, 0, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-alert::before {
+            content: '⚡';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: flash 2s infinite;
+        }
+
+        @keyframes flash {
+            0%, 50%, 100% { opacity: 1; }
+            25%, 75% { opacity: 0.3; }
         }
 
         .badge-forecast {
             background: rgba(100, 149, 237, 0.2);
             color: #87ceeb;
             border: 1px solid rgba(100, 149, 237, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-forecast::before {
+            content: '☀️';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+        }
+
+        /* Weather-specific alert badges */
+        .badge-flood {
+            background: rgba(30, 144, 255, 0.2);
+            color: #4169e1;
+            border: 1px solid rgba(30, 144, 255, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-flood::before {
+            content: '🌊';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: wave 2s ease-in-out infinite;
+        }
+
+        @keyframes wave {
+            0%, 100% { transform: translateY(0px); }
+            50% { transform: translateY(-3px); }
+        }
+
+        .badge-thunderstorm {
+            background: rgba(138, 43, 226, 0.2);
+            color: #9370db;
+            border: 1px solid rgba(138, 43, 226, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-thunderstorm::before {
+            content: '⛈️';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: shake 3s ease-in-out infinite;
+        }
+
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            10%, 30%, 50%, 70%, 90% { transform: translateX(-2px); }
+            20%, 40%, 60%, 80% { transform: translateX(2px); }
+        }
+
+        .badge-heat {
+            background: rgba(255, 140, 0, 0.2);
+            color: #ff8c00;
+            border: 1px solid rgba(255, 140, 0, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-heat::before {
+            content: '🔥';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: heatPulse 2s ease-in-out infinite;
+        }
+
+        @keyframes heatPulse {
+            0%, 100% { transform: scale(1); }
+            50% { transform: scale(1.2); }
+        }
         }
 
         .badge-similarity {
@@ -384,6 +536,8 @@
         <!-- Generate stars -->
         <script>
             const celestial = document.querySelector('.celestial');
+            
+            // Generate stars
             for (let i = 0; i < 50; i++) {
                 const star = document.createElement('div');
                 star.className = 'star';
@@ -391,6 +545,39 @@
                 star.style.top = Math.random() * 100 + '%';
                 star.style.animationDelay = Math.random() * 3 + 's';
                 celestial.appendChild(star);
+            }
+
+            // Generate rain drops (subtle, ambient effect)
+            for (let i = 0; i < 30; i++) {
+                const rain = document.createElement('div');
+                rain.className = 'rain';
+                rain.style.left = Math.random() * 100 + '%';
+                rain.style.animationDelay = Math.random() * 2 + 's';
+                rain.style.animationDuration = (0.5 + Math.random() * 0.5) + 's';
+                celestial.appendChild(rain);
+            }
+
+            // Generate a few floating clouds
+            for (let i = 0; i < 3; i++) {
+                const cloud = document.createElement('div');
+                cloud.className = 'cloud';
+                const size = 60 + Math.random() * 40;
+                cloud.style.width = size + 'px';
+                cloud.style.height = size * 0.5 + 'px';
+                cloud.style.top = (10 + i * 20) + '%';
+                cloud.style.left = '-200px';
+                cloud.style.animationDelay = (i * 7) + 's';
+                cloud.style.animationDuration = (15 + Math.random() * 10) + 's';
+                
+                // Create cloud puffs
+                const before = document.createElement('div');
+                before.style.cssText = `width: ${size * 0.7}px; height: ${size * 0.5}px; top: -${size * 0.2}px; left: ${size * 0.2}px; position: absolute; background: rgba(100, 100, 120, 0.7); border-radius: 100px;`;
+                const after = document.createElement('div');
+                after.style.cssText = `width: ${size * 0.6}px; height: ${size * 0.4}px; top: -${size * 0.15}px; right: ${size * 0.1}px; position: absolute; background: rgba(100, 100, 120, 0.7); border-radius: 100px;`;
+                
+                cloud.appendChild(before);
+                cloud.appendChild(after);
+                celestial.appendChild(cloud);
             }
         </script>
     </div>
@@ -540,9 +727,20 @@
             // Results
             if (data.results && data.results.length > 0) {
                 data.results.forEach(result => {
-                    const sourceTypeBadge = result.source_type === 'alert'
-                        ? 'badge-alert'
-                        : 'badge-forecast';
+                    // Detect specific weather alert types from headline
+                    let sourceTypeBadge = 'badge-forecast';
+                    if (result.source_type === 'alert') {
+                        const headline = (result.headline || '').toLowerCase();
+                        if (headline.includes('flood') || headline.includes('flash flood')) {
+                            sourceTypeBadge = 'badge-flood';
+                        } else if (headline.includes('thunderstorm') || headline.includes('severe thunderstorm') || headline.includes('storm')) {
+                            sourceTypeBadge = 'badge-thunderstorm';
+                        } else if (headline.includes('heat') || headline.includes('excessive heat')) {
+                            sourceTypeBadge = 'badge-heat';
+                        } else {
+                            sourceTypeBadge = 'badge-alert';
+                        }
+                    }
 
                     const similarity = (result.similarity * 100).toFixed(0);
 
