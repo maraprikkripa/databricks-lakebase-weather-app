@@ -439,6 +439,69 @@
             0%, 100% { transform: scale(1); }
             50% { transform: scale(1.2); }
         }
+
+        .badge-rain {
+            background: rgba(70, 130, 180, 0.2);
+            color: #87ceeb;
+            border: 1px solid rgba(70, 130, 180, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-rain::before {
+            content: '🌧️';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: rainDrop 2s ease-in-out infinite;
+        }
+
+        @keyframes rainDrop {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(2px); }
+        }
+
+        .badge-snow {
+            background: rgba(240, 248, 255, 0.2);
+            color: #e0e0e0;
+            border: 1px solid rgba(240, 248, 255, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-snow::before {
+            content: '❄️';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: snowfall 3s ease-in-out infinite;
+        }
+
+        @keyframes snowfall {
+            0%, 100% { transform: rotate(0deg); }
+            50% { transform: rotate(180deg); }
+        }
+
+        .badge-wind {
+            background: rgba(176, 224, 230, 0.2);
+            color: #b0e0e6;
+            border: 1px solid rgba(176, 224, 230, 0.3);
+            position: relative;
+            padding-left: 2rem;
+        }
+
+        .badge-wind::before {
+            content: '💨';
+            position: absolute;
+            left: 0.5rem;
+            font-size: 1rem;
+            animation: windBlow 2s ease-in-out infinite;
+        }
+
+        @keyframes windBlow {
+            0%, 100% { transform: translateX(0); }
+            50% { transform: translateX(3px); }
+        }
         }
 
         .badge-similarity {
@@ -727,19 +790,29 @@
             // Results
             if (data.results && data.results.length > 0) {
                 data.results.forEach(result => {
-                    // Detect specific weather alert types from headline
-                    let sourceTypeBadge = 'badge-forecast';
-                    if (result.source_type === 'alert') {
-                        const headline = (result.headline || '').toLowerCase();
-                        if (headline.includes('flood') || headline.includes('flash flood')) {
-                            sourceTypeBadge = 'badge-flood';
-                        } else if (headline.includes('thunderstorm') || headline.includes('severe thunderstorm') || headline.includes('storm')) {
-                            sourceTypeBadge = 'badge-thunderstorm';
-                        } else if (headline.includes('heat') || headline.includes('excessive heat')) {
-                            sourceTypeBadge = 'badge-heat';
-                        } else {
-                            sourceTypeBadge = 'badge-alert';
-                        }
+                    // Detect weather conditions from headline AND text content (for both alerts and forecasts)
+                    const headline = (result.headline || '').toLowerCase();
+                    const text = (result.chunk_text || result.narrative_text || '').toLowerCase();
+                    const combinedText = headline + ' ' + text;
+                    
+                    let sourceTypeBadge = 'badge-forecast';  // default
+                    
+                    // Check for specific weather conditions in ALL results (priority order)
+                    if (combinedText.includes('flood') || combinedText.includes('flash flood') || combinedText.includes('flooding')) {
+                        sourceTypeBadge = 'badge-flood';
+                    } else if (combinedText.includes('thunderstorm') || combinedText.includes('severe thunderstorm') || combinedText.includes('lightning')) {
+                        sourceTypeBadge = 'badge-thunderstorm';
+                    } else if (combinedText.includes('snow') || combinedText.includes('blizzard') || combinedText.includes('winter storm')) {
+                        sourceTypeBadge = 'badge-snow';
+                    } else if (combinedText.includes('rain') || combinedText.includes('showers') || combinedText.includes('precipitation')) {
+                        sourceTypeBadge = 'badge-rain';
+                    } else if (combinedText.includes('wind') || combinedText.includes('gust') || combinedText.includes('windy')) {
+                        sourceTypeBadge = 'badge-wind';
+                    } else if (combinedText.includes('heat') || combinedText.includes('excessive heat') || combinedText.includes('hot')) {
+                        sourceTypeBadge = 'badge-heat';
+                    } else if (result.source_type === 'alert') {
+                        // Generic alert badge if no specific condition detected
+                        sourceTypeBadge = 'badge-alert';
                     }
 
                     const similarity = (result.similarity * 100).toFixed(0);
