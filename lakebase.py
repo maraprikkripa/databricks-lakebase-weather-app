@@ -21,10 +21,9 @@ _KEY = os.environ.get("LAKEBASE_SECRET_KEY", "lakebase-url")
 def _lakebase_url() -> str:
     """Fetch and decode the Lakebase connection URL from the Databricks secret scope."""
     secret = _w.secrets.get_secret(scope=_SCOPE, key=_KEY)
-    # The secret is double base64-encoded - decode twice to get the actual PostgreSQL URL
-    first_decode = base64.b64decode(secret.value).decode("utf-8")
-    second_decode = base64.b64decode(first_decode).decode("utf-8")
-    return second_decode
+    # The secret is base64-encoded once - decode to get the PostgreSQL URL
+    decoded = base64.b64decode(secret.value).decode("utf-8")
+    return decoded
 
 
 def _parse_connection_url(url: str) -> dict:

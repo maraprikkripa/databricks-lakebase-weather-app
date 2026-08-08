@@ -519,7 +519,7 @@
             html += `
                 <div class="result-header">
                     <div class="result-count">
-                        ${data.results.length} results for "${data.query}"
+                        ${(data.results || []).length} results for "${data.query}"
                     </div>
                     <div class="search-level-badge">
                         ${data.search_level || 'chunk'} level

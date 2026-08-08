@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Ingest Weather Documents -> Vector Embeddings (Lakebase)
 # MAGIC
@@ -75,10 +79,9 @@ w = WorkspaceClient()
 def get_lakebase_url() -> str:
     """Fetch and decode the Lakebase URL from secrets."""
     secret = w.secrets.get_secret(scope="database", key="lakebase-url")
-    # The secret is double base64-encoded - decode twice to get the actual PostgreSQL URL
-    first_decode = base64.b64decode(secret.value).decode("utf-8")
-    second_decode = base64.b64decode(first_decode).decode("utf-8")
-    return second_decode
+    # The secret is base64-encoded once - decode to get the PostgreSQL URL
+    decoded = base64.b64decode(secret.value).decode("utf-8")
+    return decoded
 
 
 lakebase_url = get_lakebase_url()
@@ -257,11 +260,11 @@ for idx, row in weather_df.iterrows():
 
     chunks = chunk_text(narrative, CHUNK_SIZE, CHUNK_OVERLAP)
 
-    for chunk_idx, chunk_text in enumerate(chunks):
+    for chunk_idx, chunk_content in enumerate(chunks):
         chunked_data.append({
             'document_id': doc_id,
             'chunk_index': chunk_idx,
-            'chunk_text': chunk_text
+            'chunk_text': chunk_content
         })
 
 chunks_df = pd.DataFrame(chunked_data)

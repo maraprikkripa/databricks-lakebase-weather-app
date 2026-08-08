@@ -111,7 +111,7 @@ def call_llm(system_prompt: str, user_prompt: str) -> str:
         # Available models: meta-llama-3.1-70b-instruct, databricks-meta-llama-3.1-70b-instruct
         try:
             response = llm_client.serving_endpoints.query(
-                name="databricks-meta-llama-3-1-70b-instruct",  # Foundation Model endpoint
+                name="databricks-meta-llama-3-3-70b-instruct",  # Foundation Model endpoint
                 messages=[
                     ChatMessage(role=ChatMessageRole.SYSTEM, content=system_prompt),
                     ChatMessage(role=ChatMessageRole.USER, content=user_prompt)
@@ -694,7 +694,7 @@ Please provide a helpful answer based on the context above."""
     return jsonify({
         "query": query_text,
         "summary": summary,
-        "sources": sources,
+        "results": sources,  # Changed from 'sources' to 'results' to match frontend
         "search_level": search_level,
         "retrieval_count": len(results),
         "llm_type": llm_type  # Show which LLM was used

@@ -1,4 +1,8 @@
 # Databricks notebook source
+# /// script
+# [tool.databricks.environment]
+# environment_version = "5"
+# ///
 # MAGIC %md
 # MAGIC # Sync Weather Data from NWS API
 # MAGIC
@@ -67,10 +71,9 @@ w = WorkspaceClient()
 def get_lakebase_url() -> str:
     """Fetch and decode the Lakebase URL from secrets."""
     secret = w.secrets.get_secret(scope="database", key="lakebase-url")
-    # The secret is double base64-encoded - decode twice
-    first_decode = base64.b64decode(secret.value).decode("utf-8")
-    second_decode = base64.b64decode(first_decode).decode("utf-8")
-    return second_decode
+    # The secret is base64-encoded once - decode to get the PostgreSQL URL
+    decoded = base64.b64decode(secret.value).decode("utf-8")
+    return decoded
 
 
 lakebase_url = get_lakebase_url()
@@ -109,13 +112,13 @@ class WeatherClient:
 
     BASE_URL = "https://api.weather.gov"
 
-    # Predefined locations (lat, lon)
+    # Predefined locations (lat, lon, state)
     LOCATIONS = {
-        "chicago": (41.8781, -87.6298),
-        "austin": (30.2672, -97.7431),
-        "seattle": (47.6062, -122.3321),
-        "miami": (25.7617, -80.1918),
-        "denver": (39.7392, -104.9903)
+        "chicago": (41.8781, -87.6298, "IL"),
+        "austin": (30.2672, -97.7431, "TX"),
+        "seattle": (47.6062, -122.3321, "WA"),
+        "miami": (25.7617, -80.1918, "FL"),
+        "denver": (39.7392, -104.9903, "CO")
     }
 
     def __init__(self):
@@ -125,20 +128,19 @@ class WeatherClient:
             "Accept": "application/geo+json"
         })
 
-    def resolve_location(self, location: str) -> Optional[Tuple[float, float]]:
-        """Resolve location name to (lat, lon)."""
+    def resolve_location(self, location: str) -> Optional[Tuple[float, float, str]]:
+        """Resolve location name to (lat, lon, state)."""
         if location.lower() in self.LOCATIONS:
             return self.LOCATIONS[location.lower()]
         return None
 
-    def get_active_alerts(self, state: Optional[str] = None, limit: int = 50) -> List[dict]:
+    def get_active_alerts(self, state: Optional[str] = None) -> List[dict]:
         """Fetch active weather alerts."""
         url = f"{self.BASE_URL}/alerts/active"
         params = {}
         if state:
             params["area"] = state
-        if limit:
-            params["limit"] = limit
+        # Note: NWS API does not accept 'limit' parameter with area filter
 
         try:
             response = self.session.get(url, params=params, timeout=10)
@@ -238,12 +240,21 @@ weather_client = WeatherClient()
 # DBTITLE 1,Fetch weather data from NWS API
 all_documents = []
 
-# Fetch alerts
+# Fetch alerts by state (NWS API requires state filter)
 if INCLUDE_ALERTS:
-    print("Fetching active alerts...")
-    alerts = weather_client.get_active_alerts(limit=50)
-    all_documents.extend(alerts)
-    time.sleep(1)  # Rate limiting
+    print("Fetching active alerts by state...")
+    # Extract unique states from our locations
+    states_to_check = set(data[2] for data in weather_client.LOCATIONS.values())
+    
+    for state in states_to_check:
+        try:
+            print(f"  Fetching alerts for {state}...")
+            state_alerts = weather_client.get_active_alerts(state=state)
+            all_documents.extend(state_alerts)
+            print(f"    Found {len(state_alerts)} alerts in {state}")
+            time.sleep(1)  # Rate limiting
+        except Exception as e:
+            print(f"    Warning: Failed to fetch alerts for {state}: {e}")
 
 # Fetch forecasts for each location
 if INCLUDE_FORECAST:
@@ -251,8 +262,8 @@ if INCLUDE_FORECAST:
     for location_name in LOCATIONS:
         coords = weather_client.resolve_location(location_name)
         if coords:
-            lat, lon = coords
-            print(f"  Fetching forecast for {location_name} ({lat}, {lon})...")
+            lat, lon, state = coords  # Unpack lat, lon, state
+            print(f"  Fetching forecast for {location_name} ({lat}, {lon}) in {state}...")
             forecast = weather_client.get_forecast(lat, lon)
             all_documents.extend(forecast)
             time.sleep(1)  # Rate limiting
